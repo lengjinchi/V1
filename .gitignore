@@ -1,0 +1,37 @@
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE/editor
+.vscode/
+.idea/
+
+# OS/filesystem
+Thumbs.db
+
+# Training outputs
+runs*/
+zanbiya/
+zanbiya3/
+merge-visual_zanbiya*/
+visual_zanbiya*/
+
+# Model artifacts
+*.pt
+*.onnx
+*.engine
+*.torchscript
+
+# Large local documents
+patent_review_source.docx
