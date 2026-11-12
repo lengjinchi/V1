@@ -7,7 +7,7 @@ import torch.nn.functional as F
 from pathlib import Path
 from vajra.checks import check_suffix, check_requirements
 from vajra.utils.downloads import attempt_download_asset
-from vajra.nn.modules import A2C2f, InnerBlock, RepConv, VajraV1MerudandaX, ShapeAdaptiveMerudandaX, ScalSeq, ADown, SCDown2, RepNCSPELAN4, VajraSPPModule, SCDown, SPPFMLP, AttentionBlockV2, VajraV1MerudandaBhag16, VajraV1MerudandaBhag15, AreaAttentionBlock, SPPFRepViT, VajraStemBlock, VajraV1AttentionBhag7, MLPConv, MerudandaDW, VajraV1MerudandaBhag8, VajraV1MerudandaBhag10, VajraV1MerudandaBhag12, VajraV1AttentionBhag2, VajraStambhV4, VajraV1MerudandaBhag1, VajraV1MerudandaBhag11, VajraV1MerudandaBhag13, SanlayanSPPFAttentionV5, VajraV1AttentionBhag11, SanlayanSPPFAttentionV7, VajraV1AttentionBhag5, VajraV1MerudandaBhag9, VajraV1AttentionBhag3, VajraV1AttentionBhag6, VajraV1AttentionBhag8, VajraV1AttentionBhag10, VajraV1AttentionBhag4, VajraV1MerudandaBhag3, VajraV1MerudandaBhag4, VajraV1MerudandaBhag5, VajraV1MerudandaBhag6, VajraV1AttentionBhag9, VajraV1Attention, VajraV1AttentionBhag1, VajraV1AttentionBhag2, VajraV1Merudanda, VajraV1MerudandaBhag2, Concatenate, SanlayanSPPF, SanlayanSPPFAttention, SanlayanSPPFAttentionV4, Upsample, SPPF, VajraMerudandaBhag3, VajraLiteMerudandaBhag1, VajraV1LiteOuterBlock, VajraGrivaBhag3, VajraMerudandaBhag4, VajraMerudandaBhag5, VajraMerudandaBhag6, VajraGrivaBhag1, VajraGrivaBhag2, VajraStambh, VajraStambhV2, VajraMerudandaBhag2, VajraAttentionBlock, Sanlayan, ChatushtayaSanlayan, ConvBNAct, DepthwiseConvBNAct, MaxPool, ImagePoolingAttention, AttentionBottleneck, AttentionBottleneckV2, MerudandaDW, RepVGGDW, RepVGGBlock
+from vajra.nn.modules import A2C2f, InnerBlock, RepConv, VajraV1MerudandaX, VajraV1MerudandaXLDConv, VajraV1MerudandaXDCNv2, ShapeAdaptiveMerudandaX, ScalSeq, ADown, SCDown2, RepNCSPELAN4, VajraSPPModule, SCDown, SPPFMLP, AttentionBlockV2, VajraV1MerudandaBhag16, VajraV1MerudandaBhag15, AreaAttentionBlock, SPPFRepViT, VajraStemBlock, VajraV1AttentionBhag7, MLPConv, MerudandaDW, VajraV1MerudandaBhag8, VajraV1MerudandaBhag10, VajraV1MerudandaBhag12, VajraV1AttentionBhag2, VajraStambhV4, VajraV1MerudandaBhag1, VajraV1MerudandaBhag11, VajraV1MerudandaBhag13, SanlayanSPPFAttentionV5, VajraV1AttentionBhag11, SanlayanSPPFAttentionV7, VajraV1AttentionBhag5, VajraV1MerudandaBhag9, VajraV1AttentionBhag3, VajraV1AttentionBhag6, VajraV1AttentionBhag8, VajraV1AttentionBhag10, VajraV1AttentionBhag4, VajraV1MerudandaBhag3, VajraV1MerudandaBhag4, VajraV1MerudandaBhag5, VajraV1MerudandaBhag6, VajraV1AttentionBhag9, VajraV1Attention, VajraV1AttentionBhag1, VajraV1AttentionBhag2, VajraV1Merudanda, VajraV1MerudandaBhag2, Concatenate, SanlayanSPPF, SanlayanSPPFAttention, SanlayanSPPFAttentionV4, Upsample, SPPF, VajraMerudandaBhag3, VajraLiteMerudandaBhag1, VajraV1LiteOuterBlock, VajraGrivaBhag3, VajraMerudandaBhag4, VajraMerudandaBhag5, VajraMerudandaBhag6, VajraGrivaBhag1, VajraGrivaBhag2, VajraStambh, VajraStambhV2, VajraMerudandaBhag2, VajraAttentionBlock, Sanlayan, ChatushtayaSanlayan, ConvBNAct, DepthwiseConvBNAct, MaxPool, ImagePoolingAttention, AttentionBottleneck, AttentionBottleneckV2, MerudandaDW, RepVGGDW, RepVGGBlock
 from vajra.nn.window_attention import VajraV1SwinTransformerBlockV1, VajraV1SwinTransformerBlockV2, VajraV1SwinTransformerBlockV3, SanlayanSPPFSwinV1, VajraV1SwinTransformerBlockV4
 from vajra.nn.head import Detection, DetectionV2, OBBDetection, Segmentation, Classification, PoseDetection, WorldDetection, Panoptic, DEYODetection, PEDetection, PESegmentation, LRPCHead
 from vajra.nn.vajrav2 import VajraV2ModelNSM, VajraV2ModelLX, VajraV2CLSModel
@@ -102,9 +102,11 @@ class VajraV1ModelN(nn.Module):
 
         self.neck_conv1 = ConvBNAct(64, 64, 2, 3)
         self.concat3 = Concatenate(in_c=[64, 128], dimension=1)
-        # self.vajra_neck3 = VajraV1MerudandaX(192, 128, 128, 64, 1, True)
+        self.vajra_neck3 = VajraV1MerudandaX(192, 128, 128, 64, 1, True)
 
-        self.vajra_neck3 = ShapeAdaptiveMerudandaX(192, 128, 128, 64, 1, True, ldconv_num_param=3, route_reduction=4)
+        # self.vajra_neck3 = VajraV1MerudandaXLDConv(192, 128, 128, 64, 1, True, ldconv_num_param=3)
+        # self.vajra_neck3 = VajraV1MerudandaXDCNv2(192, 128, 128, 64, 1, True, deform_groups=1)
+        # self.vajra_neck3 = ShapeAdaptiveMerudandaX(192, 128, 128, 64, 1, True, ldconv_num_param=3, route_reduction=4)
 
         self.neck_conv2 = ConvBNAct(128, 128, 2, 3)
         self.concat4 = Concatenate(in_c=[128, 256], dimension=1)
@@ -1318,8 +1320,43 @@ class DetectionModel(Model):
         return DetectionLoss(self)
 
 class SegmentationModel(DetectionModel):
-    def __init__(self, model_name='vajra-v1-nano-seg', channels=3, num_classes=None, verbose=True):
-        super().__init__(model_name, channels, num_classes, verbose)
+    def __init__(self, model_name='vajra-v1-nano-seg', channels=3, num_classes=None, verbose=True,
+                 use_cfsav1=False, use_cfsa=False, cfsav1_groups=4, cfsav1_context_channels=16,
+                 cfsav1_rho=0.25, cfsav1_gate_smooth=False,
+                 cfsav1_global_context=False, cfsav1_semantic_context=False,
+                 samx_mode="off", samx_offset_lr_scale=0.1, samx_geometry_gain=0.1,
+                 samx_proto_mode="off", samx_proto_channels=16, samx_proto_gain=0.1,
+                 samx_proto_share_coeff=False, samx_proto_offset_bound=0.0):
+        if cfsav1_semantic_context and not use_cfsav1:
+            raise ValueError("cfsav1_semantic_context requires use_cfsav1=True")
+        if samx_proto_mode not in ("off","free","structured"):
+            raise ValueError("samx_proto_mode must be off, free or structured")
+        if samx_proto_mode!="off" and (use_cfsav1 or use_cfsa):
+            raise ValueError("Proto SAMX requires CFSA and CFSAv1 disabled")
+        if (samx_proto_share_coeff or samx_proto_offset_bound) and samx_proto_mode!="free":
+            raise ValueError('Proto mask variants require samx_proto_mode="free"')
+        custom_enhancement = use_cfsav1 or use_cfsa or samx_mode != "off" or samx_proto_mode!="off"
+        super().__init__(model_name, channels, num_classes, verbose and not custom_enhancement)
+        if samx_mode != "off":
+            from vajra.nn.samx import configure_samx
+            configure_samx(self.model[0], samx_mode, geometry_gain=samx_geometry_gain)
+        self.samx_mode = samx_mode
+        self.samx_proto_mode = samx_proto_mode
+        self.samx_proto_share_coeff = samx_proto_share_coeff
+        self.samx_proto_offset_bound = samx_proto_offset_bound
+        if use_cfsav1 or use_cfsa:
+            self.model[-1].configure_enhancement(
+                use_cfsav1, use_cfsa, cfsav1_groups, cfsav1_context_channels, cfsav1_rho,
+                cfsav1_gate_smooth, cfsav1_global_context, cfsav1_semantic_context
+            )
+        if samx_proto_mode!="off":
+            from vajra.nn.samx_followups import configure_proto_geometry
+            configure_proto_geometry(self.model[-1],samx_proto_mode,samx_proto_channels,samx_proto_gain)
+        if samx_proto_share_coeff or samx_proto_offset_bound:
+            from vajra.nn.samx_mask_variants import configure_proto_mask_variants
+            configure_proto_mask_variants(self.model[-1],samx_proto_share_coeff,samx_proto_offset_bound)
+        if custom_enhancement and verbose:
+            self.info()
 
     def init_criterion(self):
         return SegmentationLoss(self)

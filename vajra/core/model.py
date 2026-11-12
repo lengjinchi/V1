@@ -249,6 +249,10 @@ class Model(nn.Module):
     @staticmethod
     def _reset_checkpoint_args(args: dict) -> dict:
         include = {"img_size", "data", "task", "single_cls"}
+        include.update(k for k in args if k.startswith("cfsav1_") or k in {"use_cfsa", "use_cfsav1"})
+        include.update(k for k in args if k.startswith("samx_"))
+        include.update({"mask_loss_mode", "mabd_v1_boundary_radius", "mabd_v1_boundary_base",
+                        "mabd_v1_boundary_gain", "mabd_v1_boundary_cap"})
         return {k: v for k, v in args.items() if k in include}
 
     def _smart_load(self, key: str):

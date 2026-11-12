@@ -502,7 +502,10 @@ def get_flops(model, img_size=640):
         except Exception:
             im = torch.empty((1, p.shape[1], *img_size), device=p.device)
             return thop.profile(deepcopy(model), inputs=[im], verbose=False)[0] / 1e9 * 2
-    except Exception:
+    except KeyboardInterrupt:
+        raise
+    except BaseException as e:
+        LOGGER.warning(f"WARNING! FLOPs profiling failed and was skipped: {type(e).__name__}: {e}")
         return 0.0
     
 def unwrap_model(m: nn.Module) -> nn.Module:
@@ -535,8 +538,8 @@ def model_info(model, detailed=False, verbose=True, imgsz=640):
                 "%5g %40s %9s %12g %20s %10.3g %10.3g %10s"
                 % (i, name, p.requires_grad, p.numel(), list(p.shape), p.mean(), p.std(), p.dtype)
             )
-
-    flops = get_flops(model, imgsz)
+    flops = 0
+    # flops = get_flops(model, imgsz)
     fused = " (fused)" if getattr(model, "is_fused", lambda: False)() else ""
     fs = f", {flops:.1f} GFLOPs" if flops else ""
     model_name = Path(model.model_name).stem.replace("vajra-v1", "VajraV1") or "Model"

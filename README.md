@@ -2,6 +2,14 @@
 <img src="./vajra/assets/Vayuvahana_logo.png" alt="Vayuvahana Technologies Private Limited Logo" width="450">
 </div>
 
+## 本分支的实例分割研究扩展
+
+本分支保留原 CFSA 与 SAMX，并提供 CFSAv1、SAMX 独立变体、MABD 改进损失及相应的实验配置、诊断脚本和回归测试。
+
+- 方法说明：[CFSAv1](docs/en/models/cfsav1.md)、[SAMX](docs/en/models/samx_ablation.md)、[MABD](docs/en/models/mabd_v1.md)。
+- 训练入口：`seg_train.py`；联合实验入口：`run_joint_experiment.py`。各实验的配置与运行方式见 `docs/en/models/` 下的说明。
+- 数据集、训练权重、运行输出及本地汇报文件不上传。运行前需要自行准备数据集，并将对应实验配置中的 `data` 路径改为本机的数据集 YAML 文件。
+
 Vayuvahana Technologies Private Limited [VajraV1](https://github.com/NamanMakkar/VayuAI) is a 
 state-of-the-art (SOTA) real time object detection model inspired by the YOLO model architectures. VajraV1 is a family of fast, lightweight models that can be used for a variety of
 tasks like object detection and tracking, instance segmentation, oriented object detection, pose detection, and image classification.

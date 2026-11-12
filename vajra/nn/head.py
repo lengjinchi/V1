@@ -6,6 +6,7 @@ import torch
 import torch.nn as nn
 import torch.nn.init as init
 import torch.nn.functional as F
+from vajra.nn.cfsav1 import CFSAv1
 from typing import OrderedDict, List
 from torch.nn.init import xavier_uniform_, constant_ 
 from vajra.utils.dfine_ops import get_contrastive_denoising_training_group
@@ -190,12 +191,24 @@ class Segmentation(Detection):
         num_protos=256,
         in_channels=[],
         use_fft_guided_ema=False,
-        use_fft_guided_ema_proto_only=True,
+        use_fft_guided_ema_proto_only=False,
         fft_guided_ema_factor=32,
         fft_guided_ema_reduction=4,
         fft_guided_ema_low_freq_size=3,
+        use_cfsav1=False,
+        cfsav1_groups=4,
+        cfsav1_context_channels=16,
+        cfsav1_rho=0.25,
+        cfsav1_gate_smooth=False,
+        cfsav1_global_context=False,
+        cfsav1_semantic_context=False,
     ) -> None:
         super().__init__(num_classes, in_channels)
+        if use_cfsav1 and (use_fft_guided_ema or use_fft_guided_ema_proto_only):
+            raise ValueError("Choose either original CFSA or CFSAv1, not both")
+        if cfsav1_semantic_context and (not use_cfsav1 or len(in_channels) < 2):
+            raise ValueError("CFSAv1 P4 semantic context requires CFSAv1 and a P4 input")
+        self.use_cfsav1 = use_cfsav1
         self.num_masks = num_masks
         self.num_protos = num_protos
         self.use_fft_guided_ema = use_fft_guided_ema
@@ -221,6 +234,11 @@ class Segmentation(Detection):
             else nn.Identity()
         )
         self.proto = ProtoMaskModule(in_channels[0], self.num_protos, self.num_masks)
+        if use_cfsav1:
+            self.proto_enhance = CFSAv1(in_channels[0], cfsav1_groups, cfsav1_context_channels,
+                                       cfsav1_rho, cfsav1_gate_smooth,
+                                       cfsav1_global_context,
+                                       in_channels[1] if cfsav1_semantic_context else 0)
         c4 = max(in_channels[0] // 4, self.num_masks)
         self.branch_seg = nn.ModuleList(
             nn.Sequential(
@@ -231,6 +249,29 @@ class Segmentation(Detection):
             for ch in in_channels
         )
 
+    def configure_enhancement(self, use_cfsav1=False, use_cfsa=False, groups=4,
+                              context_channels=16, rho=0.25, gate_smooth=False,
+                              global_context=False, semantic_context=False):
+        """Configure before loading weights/constructing the optimizer."""
+        if use_cfsav1 and use_cfsa:
+            raise ValueError("use_cfsav1 and use_cfsa are mutually exclusive")
+        if semantic_context and (not use_cfsav1 or len(self.in_channels) < 2):
+            raise ValueError("CFSAv1 P4 semantic context requires CFSAv1 and a P4 input")
+        self.use_cfsav1 = use_cfsav1
+        self.use_fft_guided_ema = False
+        self.use_fft_guided_ema_proto_only = use_cfsa
+        self.seg_enhance = nn.Identity()
+        if use_cfsav1:
+            self.proto_enhance = CFSAv1(self.in_channels[0], groups, context_channels, rho,
+                                      gate_smooth, global_context,
+                                      self.in_channels[1] if semantic_context else 0)
+        elif use_cfsa:
+            self.proto_enhance = FFTGuidedEMA(self.in_channels[0])
+        else:
+            self.proto_enhance = nn.Identity()
+        self.proto_enhance.to(device=self.proto.conv1.conv.weight.device,
+                              dtype=self.proto.conv1.conv.weight.dtype)
+
     def forward(self, x):
         x = list(x)
         if not hasattr(self, "seg_enhance"):
@@ -238,7 +279,11 @@ class Segmentation(Detection):
         if not hasattr(self, "proto_enhance"):
             self.proto_enhance = nn.Identity()
         x[0] = self.seg_enhance(x[0])
-        proto_masks = self.proto(self.proto_enhance(x[0]))
+        if isinstance(self.proto_enhance, CFSAv1) and getattr(self.proto_enhance, "semantic_gate", None) is not None:
+            proto_input = self.proto_enhance(x[0], x[1])
+        else:
+            proto_input = self.proto_enhance(x[0])
+        proto_masks = self.proto(proto_input)
         batch_size = proto_masks.shape[0]
 
         mask_coefficients = torch.cat([self.branch_seg[i](x[i]).view(batch_size, self.num_masks, -1)
@@ -249,7 +294,7 @@ class Segmentation(Detection):
         return (torch.cat([x, mask_coefficients], 1), proto_masks) if self.export else (torch.cat([x[0], mask_coefficients], 1), (x[1], mask_coefficients, proto_masks))
 
     def get_module_info(self):
-        return f"Segmentation", f"[{self.num_classes}, {self.num_masks}, {self.num_protos}, {self.in_channels}, {self.use_fft_guided_ema}, {self.use_fft_guided_ema_proto_only}]"
+        return f"Segmentation", f"[{self.num_classes}, {self.num_masks}, {self.num_protos}, {self.in_channels}, {self.use_fft_guided_ema}, {self.use_fft_guided_ema_proto_only}, CFSAv1={getattr(self, 'use_cfsav1', False)}]"
 
 class PoseDetection(Detection):
     def __init__(self, num_classes=80, keypoint_shape=(17, 3), in_channels=[]) -> None:

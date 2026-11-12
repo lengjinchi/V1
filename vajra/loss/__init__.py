@@ -341,8 +341,9 @@ class SegmentationLoss(DetectionLoss):
     def __init__(self, model) -> None:
         super().__init__(model)
         self.overlap = model.args.overlap_mask
-        # Toggle here: True uses morphology-adaptive mask loss, False reverts to the original crop BCE mask loss.
-        self.use_morph_mask_loss = True
+        # The original MABD remains available; new experiments opt in explicitly.
+        self.mask_loss_mode = getattr(model.args, "mask_loss_mode", "bce")
+        self.use_morph_mask_loss = self.mask_loss_mode != "bce"
         self.seg_gain = self.hyperparms.get("seg", self.hyperparms.box) if self.use_morph_mask_loss else self.hyperparms.box
         self.mask_dice_base = 0.30
         self.mask_dice_shape_gain = 0.20
@@ -368,6 +369,27 @@ class SegmentationLoss(DetectionLoss):
 
     def single_mask_loss(self, gt_mask, pred, proto, xyxy, eps=1e-6):
         """Mask loss for one image"""
+        if getattr(self, "mask_loss_mode", None) in ("mabd_v1", "mabd_v1_weights", "mabd_v1_boundary"):
+            from vajra.loss.mabd_v1 import mabd_v1_loss
+            original_dice_factor = None
+            if self.mask_loss_mode == "mabd_v1_boundary":
+                original_boxes = xyxy.detach().float()
+                original_area = xyxy_to_xywh(original_boxes)[..., 2:].prod(-1).clamp_min(eps)
+                original_dice_factor, _ = self.morphology_factors(
+                    gt_mask.detach().float(), original_boxes, original_area, eps)
+            values, diagnostics = mabd_v1_loss(gt_mask, pred, proto, xyxy,
+                radius=getattr(self.hyperparms, "mabd_v1_boundary_radius", 1), eps=eps,
+                expand_boundary_roi=self.mask_loss_mode == "mabd_v1",
+                dice_shape_factor=original_dice_factor,
+                boundary_base=getattr(self.hyperparms, "mabd_v1_boundary_base", 0.05),
+                boundary_gain=getattr(self.hyperparms, "mabd_v1_boundary_gain", 0.15),
+                boundary_cap=getattr(self.hyperparms, "mabd_v1_boundary_cap", 0.20))
+            if original_dice_factor is not None:
+                diagnostics['original_dice_weight_mean'] = (
+                    self.mask_dice_base + self.mask_dice_shape_gain * original_dice_factor).mean().detach()
+            self.mabd_v1_last_diagnostics = diagnostics
+            self.mabd_v1_calls = getattr(self, "mabd_v1_calls", 0) + 1
+            return values.sum()
         pred_mask = torch.einsum("in,nhw->ihw", pred, proto)
         crop_area = xyxy_to_xywh(xyxy)[..., 2:].prod(-1).clamp_min(eps)
         bce_map = F.binary_cross_entropy_with_logits(pred_mask, gt_mask, reduction='none')

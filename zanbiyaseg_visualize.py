@@ -9,8 +9,8 @@ from vajra import Vajra
 
 
 WEIGHTS = r"F:\material\baseline\VayuAI-main\zanbiya3\zanbiya_data\weights\best-vajra-v1-nano-seg.pt"
-SOURCE = r"C:\Users\Administrator\Desktop\datasets\images\train"
-OUTPUT_DIR = Path("merge-visual_zanbiya3_0.3") / "defect_only"
+SOURCE = r"C:\Users\Administrator\Desktop\leak"
+OUTPUT_DIR = Path("leak merge-visual_zanbiya3_0.3") / "defect_only"
 MERGE_GAP_PX = 10  # Merge masks with gaps up to this many pixels; 0 means touching/overlapping only.
 
 

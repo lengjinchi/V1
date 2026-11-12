@@ -1,4 +1,5 @@
 import contextlib
+import math
 import shutil
 import subprocess
 import sys
@@ -66,13 +67,23 @@ CFG_FRACTION_KEYS = {'dropout', 'iou', 'lr0', 'lrf', 'momentum', 'weight_decay',
                      'perspective', 'flipud', 'fliplr', 'bgr', 'mosaic', 
                      'mixup', 'copy_paste', 'conf', 'fraction'}
 
-CFG_BOOL_KEYS = {'save', 'exist_ok', 'verbose', 'deterministic', 'single_cls', 
+CFG_BOOL_KEYS = {'save', 'exist_ok', 'verbose', 'deterministic', 'single_cls',
                  'rect', 'cos_lr', 'overlap_mask', 'val', 'save_json', 
                  'save_hybrid', 'half', 'dnn', 'plots', 'show', 'save_txt',
                  'save_conf', 'save_crop', 'save_frames', 'show_labels',
                  'show_conf', 'visualize', 'augment', 'agnostic_nms', 'retina_masks',
                  'show_boxes', 'keras', 'optimize', 'int8', 'dynamic', 'simplify',
                  'nms', 'profile', 'multi_scale'}
+
+CFG_BOOL_KEYS.update({'use_cfsa', 'use_cfsav1', 'cfsav1_gate_smooth', 'cfsav1_global_context',
+                      'cfsav1_semantic_context', 'samx_proto_share_coeff'})
+CFG_FLOAT_KEYS.add('samx_proto_offset_bound')
+CFG_FLOAT_KEYS.update({'mabd_v1_boundary_base', 'mabd_v1_boundary_gain', 'mabd_v1_boundary_cap'})
+CFG_INT_KEYS.update({'cfsav1_groups', 'cfsav1_context_channels',
+                     'cfsav1_warmup_epochs', 'cfsav1_gate_ramp_epochs', 'samx_proto_channels',
+                     'mabd_v1_boundary_radius'})
+CFG_FRACTION_KEYS.update({'cfsav1_rho', 'cfsav1_gate_ramp_start', 'samx_offset_lr_scale',
+                          'samx_geometry_gain', 'samx_proto_gain'})
 
 MODELS = frozenset({models_for_tasks[task] for task in tasks})
 
@@ -88,11 +99,24 @@ def config_to_dict(config):
 
     return config
 
+def _clean_retired_cfsav1_options(config):
+    """Read disabled options in historical checkpoints without re-enabling removed training."""
+    config = dict(config)
+    if config.get('cfsav1_paired') or config.get('cfsav1_sensitivity') or config.get('cfsav1_reference'):
+        raise ValueError('CFSAv1 paired views and reference supervision have been removed. '
+                         'Use single-view training; enabled legacy runs cannot be resumed with this code.')
+    for key in ('cfsav1_paired', 'cfsav1_sensitivity', 'cfsav1_reference',
+                'cfsav1_sensitivity_gain', 'cfsav1_perturb_strength', 'cfsav1_tau_scale',
+                'cfsav1_calibration_batches'):
+        config.pop(key, None)
+    return config
+
+
 def get_config(config: Union[str, Path, Dict, SimpleNamespace] = HYPERPARAMS_CFG_DICT, model_configuration: Dict = None):
-    config = config_to_dict(config)
+    config = _clean_retired_cfsav1_options(config_to_dict(config))
 
     if model_configuration:
-        model_configuration = config_to_dict(model_configuration)
+        model_configuration = _clean_retired_cfsav1_options(config_to_dict(model_configuration))
         if "save_dir" not in config:
             model_configuration.pop("save_dir", None)
         check_dict_alignment(config, model_configuration)
@@ -137,6 +161,61 @@ def check_config(config, strict=True):
                     raise TypeError(f'{k}={v} is of invalid type {type(v).__name__}'
                                     f'{k} must be a bool (i.e {k} = True or {k} = False)')
                 config[k] = bool(v)
+
+    if config.get('use_cfsa') and config.get('use_cfsav1'):
+        raise ValueError('use_cfsa and use_cfsav1 are mutually exclusive')
+    if config.get('mask_loss_mode', 'bce') not in ('bce', 'mabd', 'mabd_v1', 'mabd_v1_weights', 'mabd_v1_boundary'):
+        raise ValueError('mask_loss_mode must be bce, mabd, mabd_v1, mabd_v1_weights or mabd_v1_boundary')
+    radius = config.get('mabd_v1_boundary_radius', 1)
+    if isinstance(radius, bool) or not isinstance(radius, int) or radius < 1:
+        raise ValueError('mabd_v1_boundary_radius must be a positive integer')
+    for key, default in (('mabd_v1_boundary_base', .05), ('mabd_v1_boundary_gain', .15),
+                         ('mabd_v1_boundary_cap', .20)):
+        value = config.get(key, default)
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
+            raise ValueError(f'{key} must be a finite nonnegative number')
+    if not 0 < config.get('mabd_v1_boundary_cap', .20) <= 1:
+        raise ValueError('mabd_v1_boundary_cap must be in (0, 1]')
+    if config.get('mabd_v1_boundary_base', .05) > config.get('mabd_v1_boundary_cap', .20):
+        raise ValueError('mabd_v1_boundary_base must not exceed boundary cap')
+    if config.get('samx_mode', 'off') not in ('off', 'original', 'stage_global', 'local_global', 'geometry_residual', 'geometry_dual', 'branch_evidence'):
+        raise ValueError('Unknown samx_mode')
+    if not 0 < config.get('samx_offset_lr_scale', 0.1) <= 1:
+        raise ValueError('samx_offset_lr_scale must be in (0, 1]')
+    if isinstance(config.get('samx_geometry_gain', 0.1), bool) or not 0 < config.get('samx_geometry_gain', 0.1) <= 1:
+        raise ValueError('samx_geometry_gain must be in (0, 1]')
+    if config.get('samx_proto_mode','off') not in ('off','free','structured'):
+        raise ValueError('samx_proto_mode must be off, free or structured')
+    if config.get('samx_proto_mode','off')!='off' and (config.get('use_cfsa') or config.get('use_cfsav1')):
+        raise ValueError('Proto geometry requires CFSA and CFSAv1 disabled')
+    if isinstance(config.get('samx_proto_channels',16),bool) or config.get('samx_proto_channels',16)<=0:
+        raise ValueError('samx_proto_channels must be a positive integer')
+    if isinstance(config.get('samx_proto_gain',.1),bool) or not 0<config.get('samx_proto_gain',.1)<=1:
+        raise ValueError('samx_proto_gain must be in (0,1]')
+    bound = config.get('samx_proto_offset_bound', 0.0)
+    if isinstance(bound, bool) or not math.isfinite(bound) or bound < 0:
+        raise ValueError('samx_proto_offset_bound must be finite and nonnegative')
+    if (config.get('samx_proto_share_coeff', False) or bound) and config.get('samx_proto_mode', 'off') != 'free':
+        raise ValueError('Proto coefficient sharing and bounded offsets require samx_proto_mode="free"')
+    if config.get('cfsav1_semantic_context') and not config.get('use_cfsav1'):
+        raise ValueError('cfsav1_semantic_context requires use_cfsav1=True')
+    for key in ('cfsav1_groups', 'cfsav1_context_channels'):
+        if key in config and (isinstance(config[key], bool) or config[key] <= 0):
+            raise ValueError(f'{key} must be a positive integer')
+    if 'cfsav1_rho' in config and not 0 < config['cfsav1_rho'] < 1:
+        raise ValueError('cfsav1_rho must be strictly between 0 and 1')
+    if config.get('cfsav1_warmup_epochs', 0) < 0:
+        raise ValueError('cfsav1_warmup_epochs must be non-negative')
+    if config.get('cfsav1_warmup_epochs') and not config.get('use_cfsav1'):
+        raise ValueError('cfsav1_warmup_epochs requires use_cfsav1=True')
+    ramp_epochs = config.get('cfsav1_gate_ramp_epochs', 0)
+    if isinstance(ramp_epochs, bool) or not isinstance(ramp_epochs, int) or ramp_epochs < 0:
+        raise ValueError('cfsav1_gate_ramp_epochs must be a non-negative integer')
+    ramp_start = config.get('cfsav1_gate_ramp_start', 0.1)
+    if isinstance(ramp_start, bool) or not isinstance(ramp_start, (int, float)) or not 0 < ramp_start <= 1:
+        raise ValueError('cfsav1_gate_ramp_start must be in (0, 1]')
+    if ramp_epochs and not config.get('use_cfsav1'):
+        raise ValueError('cfsav1_gate_ramp_epochs requires use_cfsav1=True')
                 
 
 def get_save_dir(args, name=None):

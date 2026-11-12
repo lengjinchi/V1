@@ -38,6 +38,32 @@ multi_scale: False # (bool) Whether to use multiscale during training
 # Segmentation
 overlap_mask: True # (bool) masks should overlap during training (segment train only)
 mask_ratio: 4 # (int) mask downsample ratio (segment train only)
+mask_loss_mode: "bce" # (str) bce, mabd, mabd_v1 (weights + expanded ROI), mabd_v1_weights (both thinness weights), mabd_v1_boundary (original Dice + thinness boundary, GT ROI)
+mabd_v1_boundary_radius: 1 # (int) boundary band/ROI radius in prototype pixels; main BCE/Dice box is unchanged
+mabd_v1_boundary_base: 0.05 # (float) additive boundary weight; E1 explicitly uses 0.0
+mabd_v1_boundary_gain: 0.15 # (float) train-calibrated thinness multiplier for conditional E2
+mabd_v1_boundary_cap: 0.20 # (float) upper bound; follow-up E1/E2 use 0.15
+# SAMX routing ablations at nano neck3; original remains available.
+samx_mode: "off" # (str) off, original, stage_global, local_global, geometry_residual, geometry_dual, branch_evidence
+samx_offset_lr_scale: 0.1 # (float) LDConv offset lr / main lr, including warmup
+samx_geometry_gain: 0.1 # (float) initial learnable geometric residual scale
+samx_proto_mode: "off" # (str) independent Proto-only geometry: off, free, structured
+samx_proto_channels: 16 # (int) bottleneck width before P3 geometric sampling
+samx_proto_gain: 0.1 # (float) initial learnable Proto residual scale, nonzero
+samx_proto_share_coeff: False # (bool) share enhanced P3 with P3 mask coefficients; detection stays unchanged
+samx_proto_offset_bound: 0.0 # (float) per-axis Proto sampling limit in P3 cells; 0 keeps free offsets
+# Prototype enhancement: both false = baseline; never enable both together.
+use_cfsa: False # (bool) original FFTGuidedEMA/CFSA, proto-only
+use_cfsav1: False # (bool) new local-band CFSAv1, proto-only
+cfsav1_groups: 4 # (int) must divide P3 channels
+cfsav1_context_channels: 16 # (int) context/gate width
+cfsav1_rho: 0.25 # (float) gain range [1-rho, 1+rho], strictly between 0 and 1
+cfsav1_gate_smooth: False # (bool) 3x3 spatial average of bounded gate coefficients, not bands
+cfsav1_global_context: False # (bool) add pooled per-image context to local gate logits before tanh
+cfsav1_semantic_context: False # (bool) add spatial P4 hints to gate logits; CFSAv1 only
+cfsav1_gate_ramp_epochs: 0 # (int) 0 disables; reach full modulation after this many completed epochs
+cfsav1_gate_ramp_start: 0.1 # (float) initial modulation multiplier in (0, 1], without freezing the backbone
+cfsav1_warmup_epochs: 0 # (int) train only CFSAv1 for this many epochs before joint fine-tuning
 # Classification
 dropout: 0.0 # (float) use dropout regularization (classify train only)
 

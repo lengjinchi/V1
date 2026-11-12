@@ -26,12 +26,47 @@ zanbiya/
 zanbiya3/
 merge-visual_zanbiya*/
 visual_zanbiya*/
+/CFSAV1 compare/
+/Joint compare/
+/MABD compare/
+/SAMX compare/
+/leak merge-visual_zanbiya*/
+/tmp/
+/output/
+
+# Local datasets (keep vajra/configs/datasets/ configuration templates)
+/data/
+/dataset/
+/datasets/
+/images/
+/labels/
+/masks/
+/annotations/
+*.cache
+*.npy
+*.npz
+*.h5
+*.hdf5
+*.parquet
+*.tfrecord
+*.tfrecords
 
 # Model artifacts
 *.pt
+*.pth
+*.ckpt
+*.safetensors
 *.onnx
 *.engine
 *.torchscript
+
+# Local credentials and workspace notes
+.env
+.env.*
+!.env.example
+/.agents/
+/.codex*/
+/聊天记录_*.md
 
 # Large local documents
 patent_review_source.docx

@@ -6,6 +6,7 @@ import torch.nn.functional as F
 import math
 import random
 import numpy as np
+from vajra.nn.cfsav1 import CFSAv1
 from typing import Tuple, Optional, List, Union, Any, Callable
 from vajra.utils.torch_utils import fuse_conv_and_bn
 from vajra.utils import LOGGER
@@ -14,6 +15,11 @@ try:
     import einops
 except ImportError:
     einops = None
+
+try:
+    from torchvision.ops import deform_conv2d
+except Exception:
+    deform_conv2d = None
 
 act_table = {'silu' : nn.SiLU(),
              'relu' : nn.ReLU(),
@@ -7991,18 +7997,21 @@ class LDConv(nn.Module):
         self.conv = nn.Sequential(nn.Conv2d(inc, outc, kernel_size=(num_param, 1), stride=(num_param, 1), bias=bias), nn.BatchNorm2d(outc), nn.SiLU())
         self.p_conv = nn.Conv2d(inc, 2 * num_param, kernel_size=3, padding=1, stride=stride)
         nn.init.constant_(self.p_conv.weight, 0)
-        self.p_conv.register_full_backward_hook(self._set_lr)
+        nn.init.constant_(self.p_conv.bias, 0)
         self.register_buffer("p_n", self._get_p_n(N=self.num_param))
 
     @staticmethod
     def _set_lr(module, grad_input, grad_output):
-        grad_input = (grad_input[i] * 0.1 for i in range(len(grad_input)))
-        grad_output = (grad_output[i] * 0.1 for i in range(len(grad_output)))
+        # Kept so older full-module checkpoints can unpickle their stale hook.
+        # Offset learning rates are now set in Trainer.build_optimizer.
+        return None
 
     def forward(self, x):
         # N is num_param.
         offset = self.p_conv(x)
-        dtype = offset.data.type()
+        # Coordinates remain FP32 under AMP; sampled features keep x.dtype.
+        offset = offset.float()
+        dtype = offset.type()
         N = offset.size(1) // 2
         # (b, 2N, h, w)
         p = self._get_p(offset, dtype)
@@ -8019,8 +8028,11 @@ class LDConv(nn.Module):
             ],
             dim=-1,
         )
-        q_lt = p.detach().floor()
-        q_rb = q_lt + 1
+        q_floor = p.detach().floor()
+        frac_y = p[..., :N] - q_floor[..., :N]
+        frac_x = p[..., N:] - q_floor[..., N:]
+        q_lt = q_floor
+        q_rb = q_floor + 1
 
         q_lt = torch.cat([torch.clamp(q_lt[..., :N], 0, x.size(2) - 1), torch.clamp(q_lt[..., N:], 0, x.size(3) - 1)],
                          dim=-1).long()
@@ -8030,10 +8042,12 @@ class LDConv(nn.Module):
         q_rt = torch.cat([q_rb[..., :N], q_lt[..., N:]], dim=-1)
 
         # bilinear kernel (b, h, w, N)
-        g_lt = (1 + (q_lt[..., :N].type_as(p) - p[..., :N])) * (1 + (q_lt[..., N:].type_as(p) - p[..., N:]))
-        g_rb = (1 - (q_rb[..., :N].type_as(p) - p[..., :N])) * (1 - (q_rb[..., N:].type_as(p) - p[..., N:]))
-        g_lb = (1 + (q_lb[..., :N].type_as(p) - p[..., :N])) * (1 - (q_lb[..., N:].type_as(p) - p[..., N:]))
-        g_rt = (1 - (q_rt[..., :N].type_as(p) - p[..., :N])) * (1 + (q_rt[..., N:].type_as(p) - p[..., N:]))
+        # Compute weights from the *unclipped* floor, not clipped neighbor indices.
+        # At borders two/four indices can coincide; their weights must still sum to 1.
+        g_lt = ((1 - frac_y) * (1 - frac_x)).to(x.dtype)
+        g_rb = (frac_y * frac_x).to(x.dtype)
+        g_lb = ((1 - frac_y) * frac_x).to(x.dtype)
+        g_rt = (frac_y * (1 - frac_x)).to(x.dtype)
 
         # resampling the features based on the modified coordinates.
         x_q_lt = self._get_x_q(x, q_lt, N)
@@ -8059,13 +8073,13 @@ class LDConv(nn.Module):
         mod_number = self.num_param % base_int
         p_n_x,p_n_y = torch.meshgrid(
             torch.arange(0, row_number),
-            torch.arange(0,base_int))
+            torch.arange(0,base_int), indexing="ij")
         p_n_x = torch.flatten(p_n_x)
         p_n_y = torch.flatten(p_n_y)
         if mod_number >  0:
             mod_p_n_x,mod_p_n_y = torch.meshgrid(
                 torch.arange(row_number,row_number+1),
-                torch.arange(0,mod_number))
+                torch.arange(0,mod_number), indexing="ij")
 
             mod_p_n_x = torch.flatten(mod_p_n_x)
             mod_p_n_y = torch.flatten(mod_p_n_y)
@@ -8078,7 +8092,7 @@ class LDConv(nn.Module):
     def _get_p_0(self, h, w, N, dtype):
         p_0_x, p_0_y = torch.meshgrid(
             torch.arange(0, h * self.stride, self.stride),
-            torch.arange(0, w * self.stride, self.stride))
+            torch.arange(0, w * self.stride, self.stride), indexing="ij")
 
         p_0_x = torch.flatten(p_0_x).view(1, 1, h, w).repeat(1, N, 1, 1)
         p_0_y = torch.flatten(p_0_y).view(1, 1, h, w).repeat(1, N, 1, 1)
@@ -8128,6 +8142,186 @@ class LDConv(nn.Module):
     
     def get_module_info(self):
         return "LDConv", f"[{self.inc}, {self.outc}, {self.num_param}, {self.stride}]"
+
+
+class DCNv2ConvBNAct(nn.Module):
+    def __init__(
+        self,
+        in_c,
+        out_c,
+        stride=1,
+        kernel_size=3,
+        padding=None,
+        dilation=1,
+        groups=1,
+        deform_groups=1,
+        bias=False,
+        act="silu",
+    ):
+        super().__init__()
+        if deform_conv2d is None:
+            raise ImportError("torchvision.ops.deform_conv2d is required for DCNv2ConvBNAct")
+
+        if padding is None:
+            padding = autopad(kernel_size, None, dilation)
+
+        self.in_c = in_c
+        self.out_c = out_c
+        self.stride = stride
+        self.kernel_size = kernel_size
+        self.padding = padding
+        self.dilation = dilation
+        self.groups = groups
+        self.deform_groups = deform_groups
+        self.bias = bias
+
+        self.conv = nn.Conv2d(
+            in_c,
+            out_c,
+            kernel_size=kernel_size,
+            stride=1,
+            padding=0,
+            dilation=dilation,
+            groups=groups,
+            bias=bias,
+        )
+        self.offset_mask = nn.Conv2d(
+            in_c,
+            deform_groups * 3 * kernel_size * kernel_size,
+            kernel_size=kernel_size,
+            stride=stride,
+            padding=padding,
+            dilation=dilation,
+        )
+        self.bn = nn.BatchNorm2d(out_c)
+        self.act = act_table.get(act) if act is not None else nn.Identity()
+        nn.init.constant_(self.offset_mask.weight, 0)
+        nn.init.constant_(self.offset_mask.bias, 0)
+
+    def forward(self, x):
+        offset_mask = self.offset_mask(x)
+        offset_channels = self.deform_groups * 2 * self.kernel_size * self.kernel_size
+        offset = offset_mask[:, :offset_channels, :, :]
+        mask = torch.sigmoid(offset_mask[:, offset_channels:, :, :])
+        x = deform_conv2d(
+            x,
+            offset,
+            self.conv.weight,
+            self.conv.bias,
+            stride=(self.stride, self.stride),
+            padding=(self.padding, self.padding),
+            dilation=(self.dilation, self.dilation),
+            mask=mask,
+        )
+        return self.act(self.bn(x))
+
+    def get_module_info(self):
+        return (
+            "DCNv2ConvBNAct",
+            f"[{self.in_c}, {self.out_c}, {self.stride}, {self.kernel_size}, {self.padding}, {self.groups}, {self.deform_groups}, {self.dilation}, {self.bias}]",
+        )
+
+
+class VajraV1MerudandaXLDConv(nn.Module):
+    def __init__(self, in_c, out_c, mid_c1, mid_c2, num_blocks=1, rep_csp=False, ldconv_num_param=3):
+        super().__init__()
+        self.in_c = in_c
+        self.out_c = out_c
+        self.mid_c1 = mid_c1
+        self.mid_c2 = mid_c2
+        self.num_blocks = num_blocks
+        self.rep_csp = rep_csp
+        self.ldconv_num_param = ldconv_num_param
+        self.hidden_c = mid_c1 // 2
+
+        self.conv1 = ConvBNAct(in_c, mid_c1, 1, 1)
+        self.conv2 = self._make_path(self.hidden_c, mid_c2)
+        self.conv3 = self._make_path(mid_c2, mid_c2)
+        self.conv4 = ConvBNAct(mid_c1 + (2 * mid_c2), out_c, 1, 1)
+
+    def _make_path(self, in_c, out_c):
+        if self.rep_csp:
+            inner = RepCSP(in_c, out_c, self.num_blocks)
+        else:
+            inner = VajraV2InnerBlock(
+                in_c,
+                out_c,
+                num_bottleneck_blocks=self.num_blocks,
+                rep_bottleneck=False,
+                shortcut=True,
+            )
+
+        return nn.Sequential(
+            inner,
+            LDConv(out_c, out_c, num_param=self.ldconv_num_param, stride=1),
+        )
+
+    def forward(self, x):
+        y = list(self.conv1(x).chunk(2, 1))
+        y.extend(conv(y[-1]) for conv in [self.conv2, self.conv3])
+        return self.conv4(torch.cat(y, 1))
+
+    def forward_split(self, x):
+        y = list(self.conv1(x).split((self.hidden_c, self.hidden_c), 1))
+        y.extend(conv(y[-1]) for conv in [self.conv2, self.conv3])
+        return self.conv4(torch.cat(y, 1))
+
+    def get_module_info(self):
+        return (
+            "VajraV1MerudandaXLDConv",
+            f"[{self.in_c}, {self.out_c}, {self.mid_c1}, {self.mid_c2}, {self.num_blocks}, {self.rep_csp}, {self.ldconv_num_param}]",
+        )
+
+
+class VajraV1MerudandaXDCNv2(nn.Module):
+    def __init__(self, in_c, out_c, mid_c1, mid_c2, num_blocks=1, rep_csp=False, deform_groups=1):
+        super().__init__()
+        self.in_c = in_c
+        self.out_c = out_c
+        self.mid_c1 = mid_c1
+        self.mid_c2 = mid_c2
+        self.num_blocks = num_blocks
+        self.rep_csp = rep_csp
+        self.deform_groups = deform_groups
+        self.hidden_c = mid_c1 // 2
+
+        self.conv1 = ConvBNAct(in_c, mid_c1, 1, 1)
+        self.conv2 = self._make_path(self.hidden_c, mid_c2)
+        self.conv3 = self._make_path(mid_c2, mid_c2)
+        self.conv4 = ConvBNAct(mid_c1 + (2 * mid_c2), out_c, 1, 1)
+
+    def _make_path(self, in_c, out_c):
+        if self.rep_csp:
+            inner = RepCSP(in_c, out_c, self.num_blocks)
+        else:
+            inner = VajraV2InnerBlock(
+                in_c,
+                out_c,
+                num_bottleneck_blocks=self.num_blocks,
+                rep_bottleneck=False,
+                shortcut=True,
+            )
+
+        return nn.Sequential(
+            inner,
+            DCNv2ConvBNAct(out_c, out_c, stride=1, kernel_size=3, deform_groups=self.deform_groups),
+        )
+
+    def forward(self, x):
+        y = list(self.conv1(x).chunk(2, 1))
+        y.extend(conv(y[-1]) for conv in [self.conv2, self.conv3])
+        return self.conv4(torch.cat(y, 1))
+
+    def forward_split(self, x):
+        y = list(self.conv1(x).split((self.hidden_c, self.hidden_c), 1))
+        y.extend(conv(y[-1]) for conv in [self.conv2, self.conv3])
+        return self.conv4(torch.cat(y, 1))
+
+    def get_module_info(self):
+        return (
+            "VajraV1MerudandaXDCNv2",
+            f"[{self.in_c}, {self.out_c}, {self.mid_c1}, {self.mid_c2}, {self.num_blocks}, {self.rep_csp}, {self.deform_groups}]",
+        )
 
 
 class ShapeAdaptiveLocalBlock(nn.Module):

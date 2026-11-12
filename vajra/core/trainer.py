@@ -299,7 +299,8 @@ class Trainer:
                     x_interp = [0, num_warmup_iters]
                     self.accumulate = max(1, int(np.interp(num_iters, x_interp, [1, self.args.nominal_batch_size / self.batch_size]).round()))
                     for j, x in enumerate(self.optimizer.param_groups):
-                        x["lr"] = np.interp(num_iters, x_interp, [self.args.warmup_bias_lr if j==0 else 0.0, x["initial_lr"] * self.lf(epoch)])
+                        warmup_start = (self.args.warmup_bias_lr if x.get("warmup_bias", j == 0) else 0.0) * x.get("lr_scale", 1.0)
+                        x["lr"] = np.interp(num_iters, x_interp, [warmup_start, x["initial_lr"] * self.lf(epoch)])
                         if "momentum" in x:
                             x["momentum"] = np.interp(num_iters, x_interp, [self.args.warmup_momentum, self.args.momentum])
 
@@ -633,6 +634,23 @@ class Trainer:
 
         optimizer.add_param_group({'params': g_w, 'weight_decay': decay}) # Model module weights
         optimizer.add_param_group({'params': g_bnw}) # BatchNorm2d weights
+        # A module backward hook cannot set a parameter learning rate. Split
+        # LDConv offsets out of their decay/bias groups and retain the ratio in
+        # scheduler base_lrs and in bias warmup (including nonzero warmup LR).
+        from vajra.nn.modules import LDConv
+        offset_ids = {id(p) for m in model.modules() if isinstance(m, LDConv)
+                      for p in m.p_conv.parameters()}
+        scale = getattr(self.args, "samx_offset_lr_scale", 0.1)
+        if offset_ids:
+            for index, group in enumerate(list(optimizer.param_groups)):
+                slow = [p for p in group['params'] if id(p) in offset_ids]
+                if not slow:
+                    continue
+                group['params'] = [p for p in group['params'] if id(p) not in offset_ids]
+                extra = {k: v for k, v in group.items() if k != 'params'}
+                extra.update(params=slow, lr=lr * scale, lr_scale=scale, warmup_bias=index == 0)
+                optimizer.add_param_group(extra)
+            LOGGER.info(f"LDConv offset optimizer groups: lr multiplier={scale}")
         LOGGER.info(f'{colorstr("optimizer:")} {type(optimizer).__name__}(lr={lr}, momentum={momentum}) with parameter groups '
                     f'{len(g_bnw)} weight(decay=0.0), {len(g_w)} weight(decay={decay}), {len(g_b)} bias(decay=0.0)'
                     )

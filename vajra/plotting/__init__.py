@@ -900,6 +900,9 @@ def plot_results(file="path/to/results.csv", dir="", segment=False, pose=False, 
     for f in files:
         try:
             data = pd.read_csv(f)
+            # Historical logs may include removed auxiliary-loss columns.
+            if segment:
+                data = data.drop(columns=[c for c in data.columns if c.strip().endswith("/sensitivity_loss")])
             s = [x.strip() for x in data.columns]
             x = data.values[:, 0]
             for i, j in enumerate(index):
